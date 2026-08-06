@@ -1,0 +1,6 @@
+# subsystem      hosts  span
+Sales              300     50
+Engineering        120     30
+Warehouse           60     10
+Ops                 25      5
+Guest               10      0
