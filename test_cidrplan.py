@@ -250,6 +250,29 @@ class TestAllocateWorkedExample:
         assert str(sales.first_usable) == "192.168.0.1"
         assert str(sales.last_usable) == "192.168.1.254"
 
+    def test_network_and_broadcast_addresses_bracket_the_usable_range(self) -> None:
+        result = plan(*EXAMPLE_ROWS)
+
+        assert [(str(a.network_address), str(a.broadcast_address)) for a in result] == [
+            ("192.168.0.0", "192.168.1.255"),
+            ("192.168.2.0", "192.168.2.127"),
+            ("192.168.2.128", "192.168.2.191"),
+            ("192.168.2.192", "192.168.2.223"),
+            ("192.168.2.224", "192.168.2.239"),
+        ]
+
+    def test_first_usable_is_one_above_the_network_address(self) -> None:
+        for a in plan(*EXAMPLE_ROWS):
+            assert int(a.first_usable) == int(a.network_address) + 1
+
+    def test_last_usable_is_one_below_the_broadcast_address(self) -> None:
+        for a in plan(*EXAMPLE_ROWS):
+            assert int(a.last_usable) == int(a.broadcast_address) - 1
+
+    def test_network_address_matches_the_cidr_block(self) -> None:
+        for a in plan(*EXAMPLE_ROWS):
+            assert a.network_address == a.network.network_address
+
 
 class TestAllocateOrdering:
     def test_sorts_by_block_size_descending_not_by_host_count(self) -> None:
@@ -404,12 +427,12 @@ class TestAllocateProperties:
 
 # The golden table from SPEC.md section 2.
 GOLDEN_TEXT = """\
-SUBSYSTEM    HOSTS  USABLE IP RANGE                CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
-Sales          300  192.168.0.1 - 192.168.1.254    192.168.0.0/23 (510 hosts)                 210
-Engineering    120  192.168.2.1 - 192.168.2.126    192.168.2.0/25 (126 hosts)                   6
-Warehouse       60  192.168.2.129 - 192.168.2.190  192.168.2.128/26 (62 hosts)                  2
-Ops             25  192.168.2.193 - 192.168.2.222  192.168.2.192/27 (30 hosts)                  5
-Guest           10  192.168.2.225 - 192.168.2.238  192.168.2.224/28 (14 hosts)                  4
+SUBSYSTEM    HOSTS  NETWORK        USABLE IP RANGE                BROADCAST      CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
+Sales          300  192.168.0.0    192.168.0.1 - 192.168.1.254    192.168.1.255  192.168.0.0/23 (510 hosts)                 210
+Engineering    120  192.168.2.0    192.168.2.1 - 192.168.2.126    192.168.2.127  192.168.2.0/25 (126 hosts)                   6
+Warehouse       60  192.168.2.128  192.168.2.129 - 192.168.2.190  192.168.2.191  192.168.2.128/26 (62 hosts)                  2
+Ops             25  192.168.2.192  192.168.2.193 - 192.168.2.222  192.168.2.223  192.168.2.192/27 (30 hosts)                  5
+Guest           10  192.168.2.224  192.168.2.225 - 192.168.2.238  192.168.2.239  192.168.2.224/28 (14 hosts)                  4
 
 Allocated 752 addresses from 192.168.0.0 through 192.168.2.239.
 Next free address: 192.168.2.240"""
@@ -429,6 +452,12 @@ class TestRenderText:
         for line in render_text(plan(*EXAMPLE_ROWS), DEFAULT_BASE).splitlines():
             assert line == line.rstrip()
 
+    def test_network_and_broadcast_columns_appear_either_side_of_the_range(self) -> None:
+        header = render_text(plan(*EXAMPLE_ROWS), DEFAULT_BASE).splitlines()[0]
+
+        assert header.index("NETWORK") < header.index("USABLE IP RANGE")
+        assert header.index("USABLE IP RANGE") < header.index("BROADCAST")
+
     def test_columns_widen_to_fit_a_long_subsystem_name(self) -> None:
         output = render_text(plan(("A Very Long Subsystem Name", 10)), DEFAULT_BASE)
 
@@ -446,12 +475,14 @@ class TestRenderCsv:
     def test_emits_a_header_row_of_six_fields(self) -> None:
         first = render_csv(plan(*EXAMPLE_ROWS)).splitlines()[0]
 
-        assert first == "subsystem,hosts,usable_range,cidr,total_hosts,leftover"
+        assert first == ("subsystem,hosts,network,usable_range,broadcast,cidr,total_hosts,leftover")
 
     def test_splits_the_cidr_and_its_capacity_into_separate_fields(self) -> None:
         rows = render_csv(plan(*EXAMPLE_ROWS)).splitlines()
 
-        assert rows[1] == "Sales,300,192.168.0.1 - 192.168.1.254,192.168.0.0/23,510,210"
+        assert rows[1] == (
+            "Sales,300,192.168.0.0,192.168.0.1 - 192.168.1.254,192.168.1.255,192.168.0.0/23,510,210"
+        )
 
     def test_carries_no_summary_line(self) -> None:
         assert "Allocated" not in render_csv(plan(*EXAMPLE_ROWS))
@@ -477,6 +508,8 @@ class TestRenderJson:
             "subsystem": "Sales",
             "hosts": 300,
             "cidr": "192.168.0.0/23",
+            "network_address": "192.168.0.0",
+            "broadcast_address": "192.168.1.255",
             "first_usable": "192.168.0.1",
             "last_usable": "192.168.1.254",
             "total_hosts": 510,
@@ -553,7 +586,7 @@ class TestCliSuccess:
     ) -> None:
         main([example, "--format", "csv"])
 
-        assert capsys.readouterr().out.startswith("subsystem,hosts,usable_range")
+        assert capsys.readouterr().out.startswith("subsystem,hosts,network")
 
     def test_json_format_reaches_stdout(
         self, example: str, capsys: pytest.CaptureFixture[str]
@@ -582,7 +615,7 @@ class TestCliSuccess:
         main([str(path), "--format", "csv", "--order", "input"])
 
         rows = {
-            row.split(",")[0]: row.split(",")[3] for row in capsys.readouterr().out.splitlines()[1:]
+            row.split(",")[0]: row.split(",")[5] for row in capsys.readouterr().out.splitlines()[1:]
         }
         assert rows["Sales"] == "192.168.0.0/23"
         assert rows["Guest"] == "192.168.2.32/28"

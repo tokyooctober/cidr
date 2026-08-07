@@ -56,12 +56,22 @@ class Allocation:
         return self.network.num_addresses - UNUSABLE_PER_BLOCK
 
     @property
+    def network_address(self) -> ipaddress.IPv4Address:
+        """First address of the block. Not assignable to a host."""
+        return self.network.network_address
+
+    @property
+    def broadcast_address(self) -> ipaddress.IPv4Address:
+        """Last address of the block. Not assignable to a host."""
+        return self.network.broadcast_address
+
+    @property
     def first_usable(self) -> ipaddress.IPv4Address:
-        return self.network.network_address + 1
+        return self.network_address + 1
 
     @property
     def last_usable(self) -> ipaddress.IPv4Address:
-        return self.network.broadcast_address - 1
+        return self.broadcast_address - 1
 
     @property
     def leftover(self) -> int:
@@ -143,18 +153,24 @@ def tie_groups(allocations: Sequence[Allocation]) -> list[tuple[int, list[str]]]
 TEXT_HEADERS = (
     "SUBSYSTEM",
     "HOSTS",
+    "NETWORK",
     "USABLE IP RANGE",
+    "BROADCAST",
     "CIDR (TOTAL HOSTS)",
     "LEFTOVER CAPACITY",
 )
-RIGHT_ALIGNED_COLUMNS = frozenset({1, 4})
+RIGHT_ALIGNED_COLUMNS = frozenset({1, 6})
 
 
 def _text_row(allocation: Allocation) -> tuple[str, ...]:
+    # Network and broadcast bracket the usable range, so the block reads left to
+    # right: what it starts on, what is assignable, what it ends on.
     return (
         allocation.subsystem.name,
         str(allocation.subsystem.hosts),
+        str(allocation.network_address),
         f"{allocation.first_usable} - {allocation.last_usable}",
+        str(allocation.broadcast_address),
         f"{allocation.network} ({allocation.total_usable} hosts)",
         str(allocation.leftover),
     )
@@ -194,13 +210,26 @@ def render_csv(allocations: Sequence[Allocation]) -> str:
     """Render the report as CSV, with the CIDR and its capacity split apart."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(["subsystem", "hosts", "usable_range", "cidr", "total_hosts", "leftover"])
+    writer.writerow(
+        [
+            "subsystem",
+            "hosts",
+            "network",
+            "usable_range",
+            "broadcast",
+            "cidr",
+            "total_hosts",
+            "leftover",
+        ]
+    )
     for a in allocations:
         writer.writerow(
             [
                 a.subsystem.name,
                 a.subsystem.hosts,
+                str(a.network_address),
                 f"{a.first_usable} - {a.last_usable}",
+                str(a.broadcast_address),
                 str(a.network),
                 a.total_usable,
                 a.leftover,
@@ -219,6 +248,8 @@ def render_json(allocations: Sequence[Allocation], base: ipaddress.IPv4Address) 
                 "subsystem": a.subsystem.name,
                 "hosts": a.subsystem.hosts,
                 "cidr": str(a.network),
+                "network_address": str(a.network_address),
+                "broadcast_address": str(a.broadcast_address),
                 "first_usable": str(a.first_usable),
                 "last_usable": str(a.last_usable),
                 "total_hosts": a.total_usable,
@@ -243,7 +274,7 @@ def _parse_count(raw: str, field: str, line_number: int) -> int:
 
 
 def parse_input(lines: Iterable[str]) -> list[Subsystem]:
-    """Parse three-column plan text into subsystems.
+    """Parse two-column plan text into subsystems.
 
     The last field of a line is the host count; everything before it is the
     name, so names may contain spaces without needing quoting.

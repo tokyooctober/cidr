@@ -19,8 +19,9 @@ and silent overlaps are all easy to make and hard to spot.
 ### What we're building
 
 A small command-line program that reads a two-column text file (subsystem name,
-host count) and emits an allocation table: subsystem, hosts, usable IP range,
-assigned CIDR with its total capacity, and leftover capacity.
+host count) and emits an allocation table: subsystem, hosts, network address,
+usable IP range, broadcast address, assigned CIDR with its total capacity, and
+leftover capacity.
 
 ### Algorithm (the core of the spec)
 
@@ -47,9 +48,9 @@ assigned CIDR with its total capacity, and leftover capacity.
    stderr naming them, so the ordering is visible rather than arbitrary.
 4. **Allocate sequentially** starting at the base address, advancing the cursor
    by `S` after each block.
-5. **Report** each subsystem with its usable IP range (first usable → last
-   usable), its CIDR block with that block's total usable capacity, and leftover
-   capacity = `total_usable - hosts`.
+5. **Report** each subsystem with its network address, usable IP range (first
+   usable → last usable), broadcast address, CIDR block with that block's total
+   usable capacity, and leftover capacity = `total_usable - hosts`.
 
 Worked example, verified: **300 hosts → 302 needed → 512 → `/23`**, giving 510
 usable and 210 leftover.
@@ -151,30 +152,38 @@ Parsing rules:
 
 ### Output
 
-**Five columns.** The first two are copied from the input file; the last three
+**Seven columns.** The first two are copied from the input file; the last five
 are computed.
 
 | # | Column | Source | Content |
 |---|---|---|---|
 | 1 | Subsystem | input | Subsystem name, verbatim. |
 | 2 | Hosts | input | Requested host count. |
-| 3 | Usable IP Range | computed | First usable → last usable address, excluding network and broadcast. |
-| 4 | CIDR (Total Hosts) | computed | Assigned block and its total usable capacity. |
-| 5 | Leftover Capacity | computed | Column 4's capacity minus column 2. |
+| 3 | Network | computed | First address of the block. Not assignable. |
+| 4 | Usable IP Range | computed | First usable → last usable address. |
+| 5 | Broadcast | computed | Last address of the block. Not assignable. |
+| 6 | CIDR (Total Hosts) | computed | Assigned block and its total usable capacity. |
+| 7 | Leftover Capacity | computed | Column 6's capacity minus column 2. |
 
-Numeric columns (2 and 5) are right-aligned; text columns are left-aligned. Every
+Network and broadcast **bracket** the usable range rather than sitting at the end
+of the row, so each block reads left to right: what it starts on, what is
+assignable inside it, what it ends on. The two unassignable addresses are then
+visually adjacent to the range they are excluded from, which is the whole reason
+the `+2` exists.
+
+Numeric columns (2 and 7) are right-aligned; text columns are left-aligned. Every
 column is padded to the width of its widest cell, header included. Trailing
 whitespace is stripped from each line.
 
 Verified output for the input above, with the default base:
 
 ```
-SUBSYSTEM    HOSTS  USABLE IP RANGE                CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
-Sales          300  192.168.0.1 - 192.168.1.254    192.168.0.0/23 (510 hosts)                 210
-Engineering    120  192.168.2.1 - 192.168.2.126    192.168.2.0/25 (126 hosts)                   6
-Warehouse       60  192.168.2.129 - 192.168.2.190  192.168.2.128/26 (62 hosts)                  2
-Ops             25  192.168.2.193 - 192.168.2.222  192.168.2.192/27 (30 hosts)                  5
-Guest           10  192.168.2.225 - 192.168.2.238  192.168.2.224/28 (14 hosts)                  4
+SUBSYSTEM    HOSTS  NETWORK        USABLE IP RANGE                BROADCAST      CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
+Sales          300  192.168.0.0    192.168.0.1 - 192.168.1.254    192.168.1.255  192.168.0.0/23 (510 hosts)                 210
+Engineering    120  192.168.2.0    192.168.2.1 - 192.168.2.126    192.168.2.127  192.168.2.0/25 (126 hosts)                   6
+Warehouse       60  192.168.2.128  192.168.2.129 - 192.168.2.190  192.168.2.191  192.168.2.128/26 (62 hosts)                  2
+Ops             25  192.168.2.192  192.168.2.193 - 192.168.2.222  192.168.2.223  192.168.2.192/27 (30 hosts)                  5
+Guest           10  192.168.2.224  192.168.2.225 - 192.168.2.238  192.168.2.239  192.168.2.224/28 (14 hosts)                  4
 
 Allocated 752 addresses from 192.168.0.0 through 192.168.2.239.
 Next free address: 192.168.2.240
@@ -183,13 +192,22 @@ Next free address: 192.168.2.240
 **This table is the primary acceptance test.** It must reproduce byte for byte.
 
 Note how Sales spans two third-octet values — `192.168.0.1` through
-`192.168.1.254` — because a `/23` is two `/24`s wide. The next subsystem
-therefore starts at `192.168.2.0`, not `192.168.1.0`.
+`192.168.1.254` — because a `/23` is two `/24`s wide. Its broadcast address is
+`192.168.1.255`, so the next subsystem starts at `192.168.2.0`, not
+`192.168.1.0`.
 
-`csv` emits six fields — the five columns with the CIDR and its capacity split
-apart (`subsystem,hosts,usable_range,cidr,total_hosts,leftover`) — plus a header
-row and no summary. `json` emits an object with `base`, an `allocations` array,
-and a `summary` object.
+The network address is also derivable from the CIDR column (`192.168.0.0/23`
+begins at `192.168.0.0`), so column 3 is redundant with column 6 for a reader who
+does the arithmetic. It is carried explicitly because a plan is usually read by
+someone transcribing addresses into device configuration, where re-deriving it is
+an error opportunity.
+
+`csv` emits eight fields — the seven columns with the CIDR and its capacity split
+apart (`subsystem,hosts,network,usable_range,broadcast,cidr,total_hosts,leftover`)
+— plus a header row and no summary. `json` emits an object with `base`, an
+`allocations` array, and a `summary` object; each allocation carries
+`network_address` and `broadcast_address` alongside `first_usable` and
+`last_usable`.
 
 ### Tie notes
 
@@ -372,6 +390,14 @@ Over randomly generated host lists:
 The §2 example table, compared byte for byte. Covers parsing, sizing, sorting,
 allocation, alignment, column padding, and rendering in one shot — including the
 octet-crossing `/23`.
+
+### Network and broadcast column tests
+
+- Both addresses match the assigned block for every row.
+- `first_usable == network_address + 1` and `last_usable == broadcast_address - 1`
+  for every allocation — this is the `+2` rule stated as an invariant rather than
+  a computation.
+- The header places `NETWORK` before `USABLE IP RANGE` and `BROADCAST` after it.
 
 ### Error-path tests
 
