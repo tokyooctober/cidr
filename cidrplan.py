@@ -1,6 +1,6 @@
 """cidrplan — VLSM subnet allocator.
 
-Reads a three-column plan (subsystem, hosts, span) and assigns each subsystem a
+Reads a two-column plan (subsystem, hosts) and assigns each subsystem a
 correctly-sized, non-overlapping CIDR block laid out contiguously from a base
 address. See SPEC.md for the full specification.
 """
@@ -22,8 +22,7 @@ ADDRESS_BITS = 32
 LAST_IPV4_ADDRESS = 2**ADDRESS_BITS - 1
 
 # Every block loses two addresses to the network and broadcast addresses, so a
-# block must be sized to hold the demand plus these two. Span sits outside this
-# overhead: it is growth room in usable addresses, not an allowance for it.
+# block must be sized to hold the host count plus these two.
 UNUSABLE_PER_BLOCK = 2
 
 
@@ -41,7 +40,6 @@ class Subsystem:
 
     name: str
     hosts: int
-    span: int
     line: int
 
 
@@ -67,16 +65,16 @@ class Allocation:
 
     @property
     def leftover(self) -> int:
-        """Capacity beyond the demand. Span counts as used, not as leftover."""
-        return self.total_usable - (self.subsystem.hosts + self.subsystem.span)
+        """Capacity beyond the requested host count."""
+        return self.total_usable - self.subsystem.hosts
 
 
-def block_size(hosts: int, span: int) -> int:
-    """Smallest power-of-two block holding hosts + span usable addresses.
+def block_size(hosts: int) -> int:
+    """Smallest power-of-two block holding `hosts` usable addresses.
 
-    Guarantees usable capacity >= hosts + span, so leftover is never negative.
+    Guarantees usable capacity >= hosts, so leftover is never negative.
     """
-    total_needed = hosts + span + UNUSABLE_PER_BLOCK
+    total_needed = hosts + UNUSABLE_PER_BLOCK
     size = 1
     while size < total_needed:
         size *= 2
@@ -95,17 +93,15 @@ def allocate(
 
     Largest block first: this is what keeps every block on its own power-of-two
     boundary, so the plan has no alignment gaps. Ties keep input order via a
-    stable sort — a secondary key would silently reorder plans when the input
-    file is reordered.
+    stable sort — different host counts routinely share a block size (100 and
+    120 both need a /25), so a secondary key would silently reorder them.
     """
     if not subsystems:
         return []
 
-    ordered = sorted(
-        subsystems, key=lambda s: block_size(s.hosts, s.span), reverse=True
-    )
+    ordered = sorted(subsystems, key=lambda s: block_size(s.hosts), reverse=True)
 
-    largest = block_size(ordered[0].hosts, ordered[0].span)
+    largest = block_size(ordered[0].hosts)
     cursor = int(base)
     if cursor % largest != 0:
         below = (cursor // largest) * largest
@@ -117,7 +113,7 @@ def allocate(
             f"or {ipaddress.IPv4Address(above)}."
         )
 
-    total = sum(block_size(s.hosts, s.span) for s in ordered)
+    total = sum(block_size(s.hosts) for s in ordered)
     if cursor + total - 1 > LAST_IPV4_ADDRESS:
         raise LayoutError(
             f"plan needs {total} addresses starting at {base}, which runs past "
@@ -126,11 +122,11 @@ def allocate(
 
     allocations: list[Allocation] = []
     for subsystem in ordered:
-        size = block_size(subsystem.hosts, subsystem.span)
+        size = block_size(subsystem.hosts)
         network = ipaddress.IPv4Network((cursor, prefix_length(size)))
         allocation = Allocation(subsystem=subsystem, network=network)
-        # A negative leftover would mean the block is smaller than the demand it
-        # was sized for, which is a bug rather than a user error.
+        # A negative leftover would mean the block is smaller than the host
+        # count it was sized for, which is a bug rather than a user error.
         assert allocation.leftover >= 0, f"negative leftover for {subsystem.name}"
         allocations.append(allocation)
         cursor += size
@@ -153,19 +149,17 @@ def tie_groups(allocations: Sequence[Allocation]) -> list[tuple[int, list[str]]]
 TEXT_HEADERS = (
     "SUBSYSTEM",
     "HOSTS",
-    "SPAN",
     "USABLE IP RANGE",
     "CIDR (TOTAL HOSTS)",
     "LEFTOVER CAPACITY",
 )
-RIGHT_ALIGNED_COLUMNS = frozenset({1, 2, 5})
+RIGHT_ALIGNED_COLUMNS = frozenset({1, 4})
 
 
 def _text_row(allocation: Allocation) -> tuple[str, ...]:
     return (
         allocation.subsystem.name,
         str(allocation.subsystem.hosts),
-        str(allocation.subsystem.span),
         f"{allocation.first_usable} - {allocation.last_usable}",
         f"{allocation.network} ({allocation.total_usable} hosts)",
         str(allocation.leftover),
@@ -214,14 +208,13 @@ def render_csv(allocations: Sequence[Allocation]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(
-        ["subsystem", "hosts", "span", "usable_range", "cidr", "total_hosts", "leftover"]
+        ["subsystem", "hosts", "usable_range", "cidr", "total_hosts", "leftover"]
     )
     for a in allocations:
         writer.writerow(
             [
                 a.subsystem.name,
                 a.subsystem.hosts,
-                a.subsystem.span,
                 f"{a.first_usable} - {a.last_usable}",
                 str(a.network),
                 a.total_usable,
@@ -242,7 +235,6 @@ def render_json(
             {
                 "subsystem": a.subsystem.name,
                 "hosts": a.subsystem.hosts,
-                "span": a.subsystem.span,
                 "cidr": str(a.network),
                 "first_usable": str(a.first_usable),
                 "last_usable": str(a.last_usable),
@@ -272,8 +264,8 @@ def _parse_count(raw: str, field: str, line_number: int) -> int:
 def parse_input(lines: Iterable[str]) -> list[Subsystem]:
     """Parse three-column plan text into subsystems.
 
-    The last two fields of a line are hosts and span; everything before them is
-    the name, so names may contain spaces without needing quoting.
+    The last field of a line is the host count; everything before it is the
+    name, so names may contain spaces without needing quoting.
     """
     subsystems: list[Subsystem] = []
     first_seen: dict[str, int] = {}
@@ -284,23 +276,18 @@ def parse_input(lines: Iterable[str]) -> list[Subsystem]:
             continue
 
         fields = stripped.replace(",", " ").split()
-        if len(fields) < 3:
+        if len(fields) < 2:
             raise ParseError(
-                f"line {line_number}: expected 3 fields (name, hosts, span), "
+                f"line {line_number}: expected 2 fields (name, hosts), "
                 f"got {len(fields)}: {stripped!r}"
             )
 
-        name = " ".join(fields[:-2])
-        hosts = _parse_count(fields[-2], "hosts", line_number)
-        span = _parse_count(fields[-1], "span", line_number)
+        name = " ".join(fields[:-1])
+        hosts = _parse_count(fields[-1], "hosts", line_number)
 
         if hosts < 1:
             raise ParseError(
                 f"line {line_number}: hosts must be a positive integer, got {hosts}"
-            )
-        if span < 0:
-            raise ParseError(
-                f"line {line_number}: span must be a non-negative integer, got {span}"
             )
 
         # Checked across the whole file before any allocation happens, so a
@@ -312,7 +299,7 @@ def parse_input(lines: Iterable[str]) -> list[Subsystem]:
             )
         first_seen[name] = line_number
 
-        subsystems.append(Subsystem(name=name, hosts=hosts, span=span, line=line_number))
+        subsystems.append(Subsystem(name=name, hosts=hosts, line=line_number))
 
     return subsystems
 
@@ -320,9 +307,9 @@ def parse_input(lines: Iterable[str]) -> list[Subsystem]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cidrplan",
-        description="Assign CIDR blocks to subsystems from a hosts-and-span plan.",
+        description="Assign CIDR blocks to subsystems from a list of host counts.",
     )
-    parser.add_argument("input", help="three-column plan file, or - for stdin")
+    parser.add_argument("input", help="two-column plan file, or - for stdin")
     parser.add_argument(
         "--base",
         default=DEFAULT_BASE,
@@ -342,7 +329,7 @@ def _parse_base(raw: str) -> ipaddress.IPv4Address:
     if "/" in raw:
         raise ParseError(
             "--base takes a bare address, not a network. Prefix lengths are "
-            f"computed from the host and span counts. Use --base {raw.split('/')[0]}."
+            f"computed from the host counts. Use --base {raw.split('/')[0]}."
         )
     try:
         return ipaddress.IPv4Address(raw)

@@ -1,7 +1,6 @@
 # cidrplan
 
-Assign non-overlapping IPv4 CIDR blocks to subsystems from a list of host counts
-and growth allowances.
+Assign non-overlapping IPv4 CIDR blocks to subsystems from a list of host counts.
 
 Python 3.11+, standard library only. No install step.
 
@@ -12,27 +11,27 @@ python cidrplan.py examples/subsystems.txt
 ```
 
 ```
-SUBSYSTEM    HOSTS  SPAN  USABLE IP RANGE                CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
-Sales          300    50  192.168.0.1 - 192.168.1.254    192.168.0.0/23 (510 hosts)                 160
-Engineering    120    30  192.168.2.1 - 192.168.2.254    192.168.2.0/24 (254 hosts)                 104
-Warehouse       60    10  192.168.3.1 - 192.168.3.126    192.168.3.0/25 (126 hosts)                  56
-Ops             25     5  192.168.3.129 - 192.168.3.158  192.168.3.128/27 (30 hosts)                  0
-Guest           10     0  192.168.3.161 - 192.168.3.174  192.168.3.160/28 (14 hosts)                  4
+SUBSYSTEM    HOSTS  USABLE IP RANGE                CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
+Sales          300  192.168.0.1 - 192.168.1.254    192.168.0.0/23 (510 hosts)                 210
+Engineering    120  192.168.2.1 - 192.168.2.126    192.168.2.0/25 (126 hosts)                   6
+Warehouse       60  192.168.2.129 - 192.168.2.190  192.168.2.128/26 (62 hosts)                  2
+Ops             25  192.168.2.193 - 192.168.2.222  192.168.2.192/27 (30 hosts)                  5
+Guest           10  192.168.2.225 - 192.168.2.238  192.168.2.224/28 (14 hosts)                  4
 
-Allocated 944 addresses from 192.168.0.0 through 192.168.3.175.
-Next free address: 192.168.3.176
+Allocated 752 addresses from 192.168.0.0 through 192.168.2.239.
+Next free address: 192.168.2.240
 ```
 
 ## Input
 
-Three whitespace- or comma-separated columns. The last two fields are the host
-count and the span, so subsystem names may contain spaces without quoting.
+Two whitespace- or comma-separated columns. The last field is the host count, so
+subsystem names may contain spaces without quoting.
 
 ```
-# subsystem      hosts  span
-Sales              300     50
-HR Department       45     10
-Guest               10      0
+# subsystem      hosts
+Sales              300
+HR Department       45
+Guest               10
 ```
 
 Blank lines and `#` comments are ignored. Duplicate subsystem names are rejected.
@@ -49,21 +48,21 @@ Blank lines and `#` comments are ignored. Duplicate subsystem names are rejected
 
 ## How blocks are sized
 
-A subsystem asking for `hosts` addresses with `span` growth room needs
-`hosts + span` usable addresses. Every block also loses two addresses to its
-network and broadcast addresses, so the block must hold `hosts + span + 2`,
+A subsystem asking for `hosts` addresses also needs two more for its network and
+broadcast addresses, which are not assignable. The block must hold `hosts + 2`,
 rounded up to the next power of two.
 
 ```
-300 hosts + 50 span  ->  352 addresses needed  ->  512  ->  /23  ->  510 usable
+300 hosts  ->  302 addresses needed  ->  512  ->  /23  ->  510 usable
 ```
 
-Leftover capacity is `usable - (hosts + span)`: span counts as claimed, not spare.
+Leftover capacity is `usable - hosts`.
 
 Blocks are allocated **largest first**. That ordering is what keeps every block on
 its own power-of-two boundary, which is why the plan comes out contiguous with no
-wasted alignment gaps. Subsystems whose blocks come out the same size keep their
-input file order, and a note naming them is written to stderr.
+wasted alignment gaps. Different host counts often share a block size — 100 and
+120 hosts both need a `/25` — and those keep their input file order, with a note
+naming them written to stderr.
 
 ## Exit codes
 

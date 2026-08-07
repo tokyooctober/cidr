@@ -14,9 +14,9 @@ from cidrplan import (
     Subsystem,
     allocate,
     block_size,
+    main,
     parse_input,
     prefix_length,
-    main,
     render_csv,
     render_json,
     render_text,
@@ -26,12 +26,12 @@ from cidrplan import (
 DEFAULT_BASE = ipaddress.IPv4Address("192.168.0.0")
 
 
-def subsystems(*rows: tuple[str, int, int]) -> list[Subsystem]:
+def subsystems(*rows: tuple[str, int]) -> list[Subsystem]:
     """Build subsystems directly, bypassing the parser."""
-    return [Subsystem(name, hosts, span, i) for i, (name, hosts, span) in enumerate(rows, 1)]
+    return [Subsystem(name, hosts, i) for i, (name, hosts) in enumerate(rows, 1)]
 
 
-def plan(*rows: tuple[str, int, int], base: str = "192.168.0.0") -> list[Allocation]:
+def plan(*rows: tuple[str, int], base: str = "192.168.0.0") -> list[Allocation]:
     return allocate(subsystems(*rows), ipaddress.IPv4Address(base))
 
 
@@ -41,43 +41,38 @@ def parse(text: str) -> list[Subsystem]:
 
 
 class TestParseInputHappyPath:
-    def test_parses_three_columns_into_subsystems(self) -> None:
-        result = parse("Sales 300 50\nEngineering 120 30\n")
+    def test_parses_two_columns_into_subsystems(self) -> None:
+        result = parse("Sales 300\nEngineering 120\n")
 
         assert result == [
-            Subsystem(name="Sales", hosts=300, span=50, line=1),
-            Subsystem(name="Engineering", hosts=120, span=30, line=2),
+            Subsystem(name="Sales", hosts=300, line=1),
+            Subsystem(name="Engineering", hosts=120, line=2),
         ]
 
     def test_records_the_source_line_number_of_each_subsystem(self) -> None:
-        result = parse("# header\n\nSales 300 50\n\nOps 25 5\n")
+        result = parse("# header\n\nSales 300\n\nOps 25\n")
 
         assert [(s.name, s.line) for s in result] == [("Sales", 3), ("Ops", 5)]
 
     def test_skips_comment_lines_and_blank_lines(self) -> None:
-        result = parse("# a comment\n\n   \nSales 300 50\n# another\n")
+        result = parse("# a comment\n\n   \nSales 300\n# another\n")
 
         assert [s.name for s in result] == ["Sales"]
 
     def test_accepts_tab_separated_fields(self) -> None:
-        assert parse("Sales\t300\t50\n") == [Subsystem("Sales", 300, 50, 1)]
+        assert parse("Sales\t300\n") == [Subsystem("Sales", 300, 1)]
 
     def test_accepts_comma_separated_fields(self) -> None:
-        assert parse("Sales,300,50\n") == [Subsystem("Sales", 300, 50, 1)]
+        assert parse("Sales,300\n") == [Subsystem("Sales", 300, 1)]
 
     def test_accepts_runs_of_spaces_as_a_single_separator(self) -> None:
-        assert parse("Sales      300     50\n") == [Subsystem("Sales", 300, 50, 1)]
+        assert parse("Sales      300\n") == [Subsystem("Sales", 300, 1)]
 
-    def test_name_may_contain_spaces_because_only_the_last_two_fields_are_numeric(
-        self,
-    ) -> None:
-        assert parse("HR Department 45 10\n") == [Subsystem("HR Department", 45, 10, 1)]
+    def test_name_may_contain_spaces_because_only_the_last_field_is_numeric(self) -> None:
+        assert parse("HR Department 45\n") == [Subsystem("HR Department", 45, 1)]
 
     def test_strips_surrounding_whitespace_from_the_name(self) -> None:
-        assert parse("   Sales    300 50   \n") == [Subsystem("Sales", 300, 50, 1)]
-
-    def test_span_of_zero_is_valid_and_means_no_growth_room(self) -> None:
-        assert parse("Guest 10 0\n") == [Subsystem("Guest", 10, 0, 1)]
+        assert parse("   Sales    300   \n") == [Subsystem("Sales", 300, 1)]
 
     def test_empty_input_produces_no_subsystems(self) -> None:
         assert parse("") == []
@@ -87,12 +82,6 @@ class TestParseInputHappyPath:
 
 
 class TestParseInputRejectsBadInput:
-    def test_rejects_a_two_column_line_rather_than_defaulting_span_to_zero(self) -> None:
-        with pytest.raises(ParseError) as exc:
-            parse("Sales 300\n")
-
-        assert "line 1" in str(exc.value)
-
     def test_rejects_a_line_with_only_a_name(self) -> None:
         with pytest.raises(ParseError) as exc:
             parse("Sales\n")
@@ -101,31 +90,23 @@ class TestParseInputRejectsBadInput:
 
     def test_rejects_hosts_of_zero(self) -> None:
         with pytest.raises(ParseError, match="hosts"):
-            parse("Sales 0 50\n")
+            parse("Sales 0\n")
 
     def test_rejects_negative_hosts(self) -> None:
         with pytest.raises(ParseError, match="hosts"):
-            parse("Sales -5 50\n")
+            parse("Sales -5\n")
 
     def test_rejects_non_numeric_hosts(self) -> None:
         with pytest.raises(ParseError, match="hosts"):
-            parse("Sales abc 50\n")
+            parse("Sales abc\n")
 
     def test_rejects_fractional_hosts(self) -> None:
         with pytest.raises(ParseError, match="hosts"):
-            parse("Sales 3.5 50\n")
-
-    def test_rejects_negative_span(self) -> None:
-        with pytest.raises(ParseError, match="span"):
-            parse("Sales 300 -1\n")
-
-    def test_rejects_non_numeric_span(self) -> None:
-        with pytest.raises(ParseError, match="span"):
-            parse("Sales 300 abc\n")
+            parse("Sales 3.5\n")
 
     def test_error_cites_the_offending_line_number_not_the_subsystem_index(self) -> None:
         with pytest.raises(ParseError) as exc:
-            parse("# comment\nSales 300 50\n\nOps 0 5\n")
+            parse("# comment\nSales 300\n\nOps 0\n")
 
         assert "line 4" in str(exc.value)
 
@@ -133,11 +114,11 @@ class TestParseInputRejectsBadInput:
 class TestParseInputRejectsDuplicateNames:
     def test_rejects_a_duplicate_subsystem_name(self) -> None:
         with pytest.raises(ParseError, match="duplicate"):
-            parse("Sales 300 50\nSales 120 30\n")
+            parse("Sales 300\nSales 120\n")
 
     def test_duplicate_error_names_both_line_numbers(self) -> None:
         with pytest.raises(ParseError) as exc:
-            parse("Sales 300 50\nOps 25 5\nSales 120 30\n")
+            parse("Sales 300\nOps 25\nSales 120\n")
 
         message = str(exc.value)
         assert "'Sales'" in message
@@ -146,117 +127,95 @@ class TestParseInputRejectsDuplicateNames:
 
     def test_rejects_a_duplicate_on_the_very_last_line(self) -> None:
         with pytest.raises(ParseError, match="duplicate"):
-            parse("Sales 300 50\nOps 25 5\nGuest 10 0\nSales 1 1\n")
+            parse("Sales 300\nOps 25\nGuest 10\nSales 1\n")
 
     def test_names_differing_only_in_surrounding_whitespace_are_duplicates(self) -> None:
         with pytest.raises(ParseError, match="duplicate"):
-            parse("Sales 300 50\n   Sales    120 30\n")
+            parse("Sales 300\n   Sales    120\n")
 
     def test_names_differing_only_in_case_are_not_duplicates(self) -> None:
-        result = parse("Sales 300 50\nsales 120 30\n")
+        result = parse("Sales 300\nsales 120\n")
 
         assert [s.name for s in result] == ["Sales", "sales"]
 
 
-# (hosts, span, expected block size, expected prefix, expected usable, expected leftover)
+# (hosts, block size, prefix, usable, leftover)
 # This is the boundary table from SPEC.md section 5.
 SIZING_TABLE = [
-    (1, 0, 4, 30, 2, 1),
-    (2, 0, 4, 30, 2, 0),
-    (1, 1, 4, 30, 2, 0),
-    (3, 0, 8, 29, 6, 3),
-    (6, 0, 8, 29, 6, 0),
-    (14, 0, 16, 28, 14, 0),
-    (25, 5, 32, 27, 30, 0),
-    (254, 0, 256, 24, 254, 0),
-    (255, 0, 512, 23, 510, 255),
-    (200, 54, 256, 24, 254, 0),
-    (200, 55, 512, 23, 510, 255),
-    (254, 2, 512, 23, 510, 254),
-    (300, 50, 512, 23, 510, 160),
-    (510, 0, 512, 23, 510, 0),
+    (1, 4, 30, 2, 1),
+    (2, 4, 30, 2, 0),
+    (3, 8, 29, 6, 3),
+    (6, 8, 29, 6, 0),
+    (7, 16, 28, 14, 7),
+    (14, 16, 28, 14, 0),
+    (30, 32, 27, 30, 0),
+    (254, 256, 24, 254, 0),
+    (255, 512, 23, 510, 255),
+    (300, 512, 23, 510, 210),
+    (510, 512, 23, 510, 0),
+    (511, 1024, 22, 1022, 511),
 ]
+
+SAMPLE_HOST_COUNTS = [1, 2, 3, 6, 7, 14, 30, 63, 64, 65, 253, 254, 255, 300, 1000]
 
 
 class TestBlockSize:
-    @pytest.mark.parametrize("hosts,span,expected_size,_prefix,_usable,_left", SIZING_TABLE)
+    @pytest.mark.parametrize("hosts,expected_size,_prefix,_usable,_left", SIZING_TABLE)
     def test_block_size_matches_the_spec_boundary_table(
-        self, hosts: int, span: int, expected_size: int, _prefix: int, _usable: int, _left: int
+        self, hosts: int, expected_size: int, _prefix: int, _usable: int, _left: int
     ) -> None:
-        assert block_size(hosts, span) == expected_size
+        assert block_size(hosts) == expected_size
 
-    @pytest.mark.parametrize("hosts,span,_size,expected_prefix,_usable,_left", SIZING_TABLE)
+    @pytest.mark.parametrize("hosts,_size,expected_prefix,_usable,_left", SIZING_TABLE)
     def test_prefix_length_matches_the_spec_boundary_table(
-        self, hosts: int, span: int, _size: int, expected_prefix: int, _usable: int, _left: int
+        self, hosts: int, _size: int, expected_prefix: int, _usable: int, _left: int
     ) -> None:
-        assert prefix_length(block_size(hosts, span)) == expected_prefix
+        assert prefix_length(block_size(hosts)) == expected_prefix
 
-    @pytest.mark.parametrize("hosts,span,_size,_prefix,expected_usable,_left", SIZING_TABLE)
+    @pytest.mark.parametrize("hosts,_size,_prefix,expected_usable,_left", SIZING_TABLE)
     def test_usable_capacity_is_block_size_minus_network_and_broadcast(
-        self, hosts: int, span: int, _size: int, _prefix: int, expected_usable: int, _left: int
+        self, hosts: int, _size: int, _prefix: int, expected_usable: int, _left: int
     ) -> None:
-        assert block_size(hosts, span) - 2 == expected_usable
+        assert block_size(hosts) - 2 == expected_usable
 
-    @pytest.mark.parametrize("hosts,span,_size,_prefix,_usable,expected_leftover", SIZING_TABLE)
-    def test_leftover_counts_span_as_used(
-        self, hosts: int, span: int, _size: int, _prefix: int, _usable: int, expected_leftover: int
+    @pytest.mark.parametrize("hosts,_size,_prefix,_usable,expected_leftover", SIZING_TABLE)
+    def test_leftover_is_usable_capacity_minus_hosts(
+        self, hosts: int, _size: int, _prefix: int, _usable: int, expected_leftover: int
     ) -> None:
-        usable = block_size(hosts, span) - 2
+        assert (block_size(hosts) - 2) - hosts == expected_leftover
 
-        assert usable - (hosts + span) == expected_leftover
+    def test_an_exact_fit_does_not_jump_to_the_next_prefix(self) -> None:
+        # 254 fits a /24 exactly; one more host forces a /23.
+        assert block_size(254) == 256
+        assert block_size(255) == 512
 
-    def test_span_sits_outside_the_plus_two(self) -> None:
-        # 254 hosts + 2 span is the smallest case distinguishing sizing on
-        # hosts+span+2 (a /23) from sizing on hosts+span (a /24, which would
-        # give 254 usable against a demand of 256 — a leftover of -2).
-        assert block_size(254, 2) == 512
-        assert prefix_length(block_size(254, 2)) == 23
+    @pytest.mark.parametrize("hosts", SAMPLE_HOST_COUNTS)
+    def test_leftover_is_never_negative(self, hosts: int) -> None:
+        assert block_size(hosts) - 2 >= hosts
 
-    def test_span_is_added_before_rounding_not_after(self) -> None:
-        # 200+54 fits a /24 exactly; one more span address forces a /23.
-        assert block_size(200, 54) == 256
-        assert block_size(200, 55) == 512
-
-    def test_span_of_zero_needs_no_floor_because_the_plus_two_already_applies(self) -> None:
-        assert block_size(64, 0) == 128
-        assert block_size(64, 0) - 2 >= 64
-
-    @pytest.mark.parametrize("hosts", [1, 2, 3, 63, 64, 65, 253, 254, 255, 1000])
-    @pytest.mark.parametrize("span", [0, 1, 2, 7, 50])
-    def test_leftover_is_never_negative(self, hosts: int, span: int) -> None:
-        usable = block_size(hosts, span) - 2
-
-        assert usable >= hosts + span
-
-    @pytest.mark.parametrize("hosts", [1, 2, 3, 63, 64, 65, 253, 254, 255, 1000])
-    @pytest.mark.parametrize("span", [0, 1, 2, 7, 50])
-    def test_block_size_is_always_a_power_of_two(self, hosts: int, span: int) -> None:
-        size = block_size(hosts, span)
+    @pytest.mark.parametrize("hosts", SAMPLE_HOST_COUNTS)
+    def test_block_size_is_always_a_power_of_two(self, hosts: int) -> None:
+        size = block_size(hosts)
 
         assert size & (size - 1) == 0
 
-    @pytest.mark.parametrize("hosts", [1, 2, 3, 63, 64, 65, 253, 254, 255, 1000])
-    @pytest.mark.parametrize("span", [0, 1, 2, 7, 50])
-    def test_block_is_minimal_because_halving_it_would_not_fit(
-        self, hosts: int, span: int
-    ) -> None:
-        size = block_size(hosts, span)
-
-        assert (size // 2) - 2 < hosts + span
+    @pytest.mark.parametrize("hosts", SAMPLE_HOST_COUNTS)
+    def test_block_is_minimal_because_halving_it_would_not_fit(self, hosts: int) -> None:
+        assert (block_size(hosts) // 2) - 2 < hosts
 
     def test_smallest_block_is_a_slash_30_because_a_slash_31_has_no_usable_addresses(
         self,
     ) -> None:
-        assert block_size(1, 0) == 4
+        assert block_size(1) == 4
         assert prefix_length(4) == 30
 
 
 EXAMPLE_ROWS = (
-    ("Sales", 300, 50),
-    ("Engineering", 120, 30),
-    ("Warehouse", 60, 10),
-    ("Ops", 25, 5),
-    ("Guest", 10, 0),
+    ("Sales", 300),
+    ("Engineering", 120),
+    ("Warehouse", 60),
+    ("Ops", 25),
+    ("Guest", 10),
 )
 
 
@@ -265,11 +224,11 @@ class TestAllocateWorkedExample:
         result = plan(*EXAMPLE_ROWS)
 
         assert [(a.subsystem.name, str(a.network), a.total_usable, a.leftover) for a in result] == [
-            ("Sales", "192.168.0.0/23", 510, 160),
-            ("Engineering", "192.168.2.0/24", 254, 104),
-            ("Warehouse", "192.168.3.0/25", 126, 56),
-            ("Ops", "192.168.3.128/27", 30, 0),
-            ("Guest", "192.168.3.160/28", 14, 4),
+            ("Sales", "192.168.0.0/23", 510, 210),
+            ("Engineering", "192.168.2.0/25", 126, 6),
+            ("Warehouse", "192.168.2.128/26", 62, 2),
+            ("Ops", "192.168.2.192/27", 30, 5),
+            ("Guest", "192.168.2.224/28", 14, 4),
         ]
 
     def test_usable_ranges_exclude_network_and_broadcast_addresses(self) -> None:
@@ -277,10 +236,10 @@ class TestAllocateWorkedExample:
 
         assert [(str(a.first_usable), str(a.last_usable)) for a in result] == [
             ("192.168.0.1", "192.168.1.254"),
-            ("192.168.2.1", "192.168.2.254"),
-            ("192.168.3.1", "192.168.3.126"),
-            ("192.168.3.129", "192.168.3.158"),
-            ("192.168.3.161", "192.168.3.174"),
+            ("192.168.2.1", "192.168.2.126"),
+            ("192.168.2.129", "192.168.2.190"),
+            ("192.168.2.193", "192.168.2.222"),
+            ("192.168.2.225", "192.168.2.238"),
         ]
 
     def test_a_slash_23_spans_two_third_octet_values(self) -> None:
@@ -289,43 +248,37 @@ class TestAllocateWorkedExample:
         assert str(sales.first_usable) == "192.168.0.1"
         assert str(sales.last_usable) == "192.168.1.254"
 
-    def test_an_exact_fit_yields_zero_leftover_without_jumping_a_prefix(self) -> None:
-        ops = plan(*EXAMPLE_ROWS)[3]
-
-        assert (ops.total_usable, ops.leftover) == (30, 0)
-        assert str(ops.network) == "192.168.3.128/27"
-
 
 class TestAllocateOrdering:
     def test_sorts_by_block_size_descending_not_by_host_count(self) -> None:
-        # 100+200 needs a /23; 150+0 needs only a /24. Sorting by host count
-        # would place the smaller block first and misalign the plan.
-        result = plan(("Small", 150, 0), ("Big", 100, 200))
+        # 100 and 120 hosts both need a /25, so they tie and must keep input
+        # order. Sorting by host count would put 120 first.
+        result = plan(("Smaller", 100), ("Larger", 120))
 
-        assert [a.subsystem.name for a in result] == ["Big", "Small"]
-        assert [str(a.network) for a in result] == ["192.168.0.0/23", "192.168.2.0/24"]
+        assert [a.subsystem.name for a in result] == ["Smaller", "Larger"]
+        assert [str(a.network) for a in result] == ["192.168.0.0/25", "192.168.0.128/25"]
+
+    def test_larger_blocks_come_first(self) -> None:
+        result = plan(("Tiny", 5), ("Huge", 900), ("Middle", 100))
+
+        assert [a.subsystem.name for a in result] == ["Huge", "Middle", "Tiny"]
 
     def test_ties_preserve_input_order(self) -> None:
-        result = plan(("Zulu", 25, 5), ("Alpha", 25, 5), ("Mike", 25, 5))
+        result = plan(("Zulu", 25), ("Alpha", 30), ("Mike", 20))
 
         assert [a.subsystem.name for a in result] == ["Zulu", "Alpha", "Mike"]
 
     def test_reversing_tied_input_reverses_output_proving_the_sort_is_stable(self) -> None:
-        forward = plan(("Zulu", 25, 5), ("Alpha", 25, 5), ("Mike", 25, 5))
-        reverse = plan(("Mike", 25, 5), ("Alpha", 25, 5), ("Zulu", 25, 5))
+        forward = plan(("Zulu", 25), ("Alpha", 30), ("Mike", 20))
+        reverse = plan(("Mike", 20), ("Alpha", 30), ("Zulu", 25))
 
         assert [a.subsystem.name for a in forward] == ["Zulu", "Alpha", "Mike"]
         assert [a.subsystem.name for a in reverse] == ["Mike", "Alpha", "Zulu"]
 
-    def test_no_secondary_sort_key_reorders_equal_sized_blocks(self) -> None:
-        result = plan(("Yankee", 10, 0), ("Xray", 12, 2), ("Whiskey", 14, 0))
-
-        assert [a.subsystem.name for a in result] == ["Yankee", "Xray", "Whiskey"]
-
 
 class TestTieGroups:
     def test_reports_a_group_of_subsystems_sharing_a_block_size(self) -> None:
-        result = plan(("Ops", 25, 5), ("Lab", 20, 10))
+        result = plan(("Ops", 25), ("Lab", 30))
 
         assert tie_groups(result) == [(27, ["Ops", "Lab"])]
 
@@ -333,7 +286,7 @@ class TestTieGroups:
         assert tie_groups(plan(*EXAMPLE_ROWS)) == []
 
     def test_reports_each_tied_prefix_separately(self) -> None:
-        result = plan(("A", 25, 5), ("B", 25, 5), ("C", 100, 0), ("D", 100, 0))
+        result = plan(("A", 25), ("B", 30), ("C", 100), ("D", 120))
 
         assert tie_groups(result) == [(25, ["C", "D"]), (27, ["A", "B"])]
 
@@ -357,27 +310,27 @@ class TestAllocateBaseAlignment:
         assert str(result[0].network) == "192.168.2.0/23"
 
     def test_alignment_is_judged_against_the_largest_block_not_the_first_row(self) -> None:
-        # Guest is listed first but Sales gets allocated first, so the base must
+        # Guest is listed first but Sales is allocated first, so the base must
         # satisfy the /23, not the /28.
         with pytest.raises(LayoutError, match="aligned"):
-            plan(("Guest", 10, 0), ("Sales", 300, 50), base="192.168.1.0")
+            plan(("Guest", 10), ("Sales", 300), base="192.168.1.0")
 
 
 class TestAllocateOverflow:
     def test_rejects_a_plan_running_past_the_end_of_ipv4_space(self) -> None:
-        # Two /23s need 1024 addresses; starting at 255.255.254.0 leaves only 512.
+        # The plan needs 752 addresses; the last /23-aligned base leaves 512.
         with pytest.raises(LayoutError, match="255.255.255.255"):
-            plan(("Big", 300, 50), ("Another", 300, 50), base="255.255.254.0")
+            plan(*EXAMPLE_ROWS, base="255.255.254.0")
 
     def test_a_plan_ending_exactly_at_the_last_address_is_allowed(self) -> None:
-        result = plan(("Edge", 250, 0), base="255.255.255.0")
+        result = plan(("Edge", 250), base="255.255.255.0")
 
         assert str(result[0].network) == "255.255.255.0/24"
 
     def test_a_plan_filling_the_final_1024_addresses_exactly_is_allowed(self) -> None:
         # Off-by-one guard: this ends on 255.255.255.255 and must not be
         # mistaken for an overflow.
-        result = plan(("Big", 300, 50), ("Another", 300, 50), base="255.255.252.0")
+        result = plan(("Big", 300), ("Another", 300), base="255.255.252.0")
 
         assert str(result[-1].network.broadcast_address) == "255.255.255.255"
 
@@ -387,7 +340,7 @@ class TestAllocateEdgeCases:
         assert allocate([], DEFAULT_BASE) == []
 
     def test_a_single_subsystem_is_allocated_at_the_base(self) -> None:
-        result = plan(("Only", 10, 0))
+        result = plan(("Only", 10))
 
         assert str(result[0].network) == "192.168.0.0/28"
 
@@ -404,12 +357,9 @@ class TestAllocateProperties:
     """Randomised checks of the invariants that make a plan valid."""
 
     @staticmethod
-    def random_rows(seed: int) -> list[tuple[str, int, int]]:
+    def random_rows(seed: int) -> list[tuple[str, int]]:
         rng = random.Random(seed)
-        return [
-            (f"sub{i}", rng.randint(1, 4000), rng.choice([0, 1, 2, 5, 50, 200]))
-            for i in range(rng.randint(1, 12))
-        ]
+        return [(f"sub{i}", rng.randint(1, 4000)) for i in range(rng.randint(1, 12))]
 
     @pytest.mark.parametrize("seed", range(60))
     def test_blocks_never_overlap(self, seed: int) -> None:
@@ -419,9 +369,9 @@ class TestAllocateProperties:
             assert int(a.network.broadcast_address) < int(b.network.network_address)
 
     @pytest.mark.parametrize("seed", range(60))
-    def test_every_block_holds_at_least_hosts_plus_span(self, seed: int) -> None:
+    def test_every_block_holds_at_least_its_host_count(self, seed: int) -> None:
         for a in plan(*self.random_rows(seed), base="10.0.0.0"):
-            assert a.total_usable >= a.subsystem.hosts + a.subsystem.span
+            assert a.total_usable >= a.subsystem.hosts
 
     @pytest.mark.parametrize("seed", range(60))
     def test_every_block_is_aligned_to_its_own_size(self, seed: int) -> None:
@@ -431,7 +381,7 @@ class TestAllocateProperties:
     @pytest.mark.parametrize("seed", range(60))
     def test_leftover_is_always_consistent_and_non_negative(self, seed: int) -> None:
         for a in plan(*self.random_rows(seed), base="10.0.0.0"):
-            assert a.leftover == a.total_usable - (a.subsystem.hosts + a.subsystem.span)
+            assert a.leftover == a.total_usable - a.subsystem.hosts
             assert a.leftover >= 0
 
     @pytest.mark.parametrize("seed", range(60))
@@ -446,21 +396,20 @@ class TestAllocateProperties:
     @pytest.mark.parametrize("seed", range(60))
     def test_no_block_could_be_halved_and_still_fit(self, seed: int) -> None:
         for a in plan(*self.random_rows(seed), base="10.0.0.0"):
-            half = a.network.num_addresses // 2
-            assert half - 2 < a.subsystem.hosts + a.subsystem.span
+            assert (a.network.num_addresses // 2) - 2 < a.subsystem.hosts
 
 
 # The golden table from SPEC.md section 2.
 GOLDEN_TEXT = """\
-SUBSYSTEM    HOSTS  SPAN  USABLE IP RANGE                CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
-Sales          300    50  192.168.0.1 - 192.168.1.254    192.168.0.0/23 (510 hosts)                 160
-Engineering    120    30  192.168.2.1 - 192.168.2.254    192.168.2.0/24 (254 hosts)                 104
-Warehouse       60    10  192.168.3.1 - 192.168.3.126    192.168.3.0/25 (126 hosts)                  56
-Ops             25     5  192.168.3.129 - 192.168.3.158  192.168.3.128/27 (30 hosts)                  0
-Guest           10     0  192.168.3.161 - 192.168.3.174  192.168.3.160/28 (14 hosts)                  4
+SUBSYSTEM    HOSTS  USABLE IP RANGE                CIDR (TOTAL HOSTS)           LEFTOVER CAPACITY
+Sales          300  192.168.0.1 - 192.168.1.254    192.168.0.0/23 (510 hosts)                 210
+Engineering    120  192.168.2.1 - 192.168.2.126    192.168.2.0/25 (126 hosts)                   6
+Warehouse       60  192.168.2.129 - 192.168.2.190  192.168.2.128/26 (62 hosts)                  2
+Ops             25  192.168.2.193 - 192.168.2.222  192.168.2.192/27 (30 hosts)                  5
+Guest           10  192.168.2.225 - 192.168.2.238  192.168.2.224/28 (14 hosts)                  4
 
-Allocated 944 addresses from 192.168.0.0 through 192.168.3.175.
-Next free address: 192.168.3.176"""
+Allocated 752 addresses from 192.168.0.0 through 192.168.2.239.
+Next free address: 192.168.2.240"""
 
 
 class TestRenderText:
@@ -478,7 +427,7 @@ class TestRenderText:
             assert line == line.rstrip()
 
     def test_columns_widen_to_fit_a_long_subsystem_name(self) -> None:
-        output = render_text(plan(("A Very Long Subsystem Name", 10, 0)), DEFAULT_BASE)
+        output = render_text(plan(("A Very Long Subsystem Name", 10)), DEFAULT_BASE)
 
         assert "A Very Long Subsystem Name" in output
         assert output.splitlines()[0].startswith("SUBSYSTEM" + " " * 18)
@@ -491,75 +440,75 @@ class TestRenderText:
 
 
 class TestRenderCsv:
-    def test_emits_a_header_row_of_seven_fields(self) -> None:
+    def test_emits_a_header_row_of_six_fields(self) -> None:
         first = render_csv(plan(*EXAMPLE_ROWS)).splitlines()[0]
 
-        assert first == "subsystem,hosts,span,usable_range,cidr,total_hosts,leftover"
+        assert first == "subsystem,hosts,usable_range,cidr,total_hosts,leftover"
 
     def test_splits_the_cidr_and_its_capacity_into_separate_fields(self) -> None:
         rows = render_csv(plan(*EXAMPLE_ROWS)).splitlines()
 
-        assert rows[1] == (
-            "Sales,300,50,192.168.0.1 - 192.168.1.254,192.168.0.0/23,510,160"
-        )
+        assert rows[1] == "Sales,300,192.168.0.1 - 192.168.1.254,192.168.0.0/23,510,210"
 
     def test_carries_no_summary_line(self) -> None:
         assert "Allocated" not in render_csv(plan(*EXAMPLE_ROWS))
 
     def test_quotes_a_name_containing_a_comma(self) -> None:
-        output = render_csv(plan(("Sales, EMEA", 10, 0)))
+        output = render_csv(plan(("Sales, EMEA", 10)))
 
         assert '"Sales, EMEA"' in output
 
 
 class TestRenderJson:
     def test_carries_the_base_the_allocations_and_a_summary(self) -> None:
-        import json
-
         payload = json.loads(render_json(plan(*EXAMPLE_ROWS), DEFAULT_BASE))
 
         assert payload["base"] == "192.168.0.0"
         assert len(payload["allocations"]) == 5
-        assert payload["summary"]["total_addresses"] == 944
+        assert payload["summary"]["total_addresses"] == 752
 
     def test_each_allocation_carries_every_reported_field(self) -> None:
-        import json
-
         payload = json.loads(render_json(plan(*EXAMPLE_ROWS), DEFAULT_BASE))
 
         assert payload["allocations"][0] == {
             "subsystem": "Sales",
             "hosts": 300,
-            "span": 50,
             "cidr": "192.168.0.0/23",
             "first_usable": "192.168.0.1",
             "last_usable": "192.168.1.254",
             "total_hosts": 510,
-            "leftover": 160,
+            "leftover": 210,
         }
 
     def test_is_valid_json_for_an_empty_plan(self) -> None:
-        import json
-
         payload = json.loads(render_json([], DEFAULT_BASE))
 
         assert payload["allocations"] == []
 
 
 EXAMPLE_FILE = """\
-# subsystem      hosts  span
-Sales              300     50
-Engineering        120     30
-Warehouse           60     10
-Ops                 25      5
-Guest               10      0
+# subsystem      hosts
+Sales              300
+Engineering        120
+Warehouse           60
+Ops                 25
+Guest               10
 """
+
+TIED_FILE = "Ops 25\nLab 30\n"
 
 
 @pytest.fixture
 def example(tmp_path):  # type: ignore[no-untyped-def]
     path = tmp_path / "subsystems.txt"
     path.write_text(EXAMPLE_FILE, encoding="utf-8")
+    return str(path)
+
+
+@pytest.fixture
+def tied(tmp_path):  # type: ignore[no-untyped-def]
+    path = tmp_path / "ties.txt"
+    path.write_text(TIED_FILE, encoding="utf-8")
     return str(path)
 
 
@@ -591,30 +540,36 @@ class TestCliSuccess:
     def test_csv_format_reaches_stdout(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
         main([example, "--format", "csv"])
 
-        assert capsys.readouterr().out.startswith("subsystem,hosts,span")
+        assert capsys.readouterr().out.startswith("subsystem,hosts,usable_range")
 
     def test_json_format_reaches_stdout(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
         main([example, "--format", "json"])
 
         assert json.loads(capsys.readouterr().out)["base"] == "192.168.0.0"
 
-    def test_order_input_restores_the_original_file_order(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
-        main([example, "--format", "csv", "--order", "input"])
+    def test_order_input_restores_the_original_file_order(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+        path = tmp_path / "unsorted.txt"
+        path.write_text("Guest 10\nSales 300\nOps 25\n", encoding="utf-8")
+
+        main([str(path), "--format", "csv", "--order", "input"])
 
         names = [row.split(",")[0] for row in capsys.readouterr().out.splitlines()[1:]]
-        assert names == ["Sales", "Engineering", "Warehouse", "Ops", "Guest"]
+        assert names == ["Guest", "Sales", "Ops"]
 
     def test_order_input_does_not_change_the_blocks_that_were_assigned(
-        self, example, capsys
+        self, tmp_path, capsys
     ) -> None:  # type: ignore[no-untyped-def]
-        main([example, "--format", "csv", "--order", "input"])
+        path = tmp_path / "unsorted.txt"
+        path.write_text("Guest 10\nSales 300\nOps 25\n", encoding="utf-8")
+
+        main([str(path), "--format", "csv", "--order", "input"])
 
         rows = dict(
-            (row.split(",")[0], row.split(",")[4])
+            (row.split(",")[0], row.split(",")[3])
             for row in capsys.readouterr().out.splitlines()[1:]
         )
         assert rows["Sales"] == "192.168.0.0/23"
-        assert rows["Guest"] == "192.168.3.160/28"
+        assert rows["Guest"] == "192.168.2.32/28"
 
     def test_output_flag_writes_to_a_file_and_leaves_stdout_empty(
         self, example, tmp_path, capsys
@@ -628,37 +583,27 @@ class TestCliSuccess:
 
 
 class TestCliTieNotes:
-    def test_tie_note_goes_to_stderr_not_stdout(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
-        path = tmp_path / "ties.txt"
-        path.write_text("Ops 25 5\nLab 20 10\n", encoding="utf-8")
-
-        main([str(path)])
+    def test_tie_note_goes_to_stderr_not_stdout(self, tied, capsys) -> None:  # type: ignore[no-untyped-def]
+        main([tied])
 
         captured = capsys.readouterr()
         assert "tie" in captured.err
         assert "tie" not in captured.out
 
-    def test_tie_note_names_every_member_of_the_group(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
-        path = tmp_path / "ties.txt"
-        path.write_text("Ops 25 5\nLab 20 10\n", encoding="utf-8")
+    def test_tie_note_names_every_member_of_the_group(self, tied, capsys) -> None:  # type: ignore[no-untyped-def]
+        main([tied])
 
-        main([str(path)])
+        error = capsys.readouterr().err
+        assert "Ops" in error
+        assert "Lab" in error
 
-        assert "Ops" in capsys.readouterr().err
-
-    def test_quiet_suppresses_the_tie_note(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
-        path = tmp_path / "ties.txt"
-        path.write_text("Ops 25 5\nLab 20 10\n", encoding="utf-8")
-
-        main([str(path), "-q"])
+    def test_quiet_suppresses_the_tie_note(self, tied, capsys) -> None:  # type: ignore[no-untyped-def]
+        main([tied, "-q"])
 
         assert capsys.readouterr().err == ""
 
-    def test_a_tie_does_not_change_the_exit_code(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        path = tmp_path / "ties.txt"
-        path.write_text("Ops 25 5\nLab 20 10\n", encoding="utf-8")
-
-        assert main([str(path)]) == 0
+    def test_a_tie_does_not_change_the_exit_code(self, tied) -> None:  # type: ignore[no-untyped-def]
+        assert main([tied]) == 0
 
     def test_no_note_is_emitted_when_no_block_sizes_tie(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
         main([example])
@@ -671,7 +616,7 @@ class TestCliErrors:
         self, tmp_path, capsys
     ) -> None:  # type: ignore[no-untyped-def]
         path = tmp_path / "dupes.txt"
-        path.write_text("Sales 300 50\nOps 25 5\nSales 10 0\n", encoding="utf-8")
+        path.write_text("Sales 300\nOps 25\nSales 10\n", encoding="utf-8")
 
         code = main([str(path)])
 
@@ -682,7 +627,7 @@ class TestCliErrors:
 
     def test_bad_host_count_exits_two_citing_the_line(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
         path = tmp_path / "bad.txt"
-        path.write_text("Sales 300 50\nOps 0 5\n", encoding="utf-8")
+        path.write_text("Sales 300\nOps 0\n", encoding="utf-8")
 
         code = main([str(path)])
 
@@ -718,7 +663,6 @@ class TestCliErrors:
         assert "aligned" in captured.err
 
     def test_ipv4_overflow_exits_one(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
-        # The plan needs 944 addresses; the last /23-aligned base leaves 512.
         code = main([example, "--base", "255.255.254.0"])
 
         assert code == 1
