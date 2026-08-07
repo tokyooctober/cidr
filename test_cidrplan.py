@@ -4,6 +4,8 @@ import io
 import ipaddress
 import json
 import random
+from itertools import pairwise
+from pathlib import Path
 
 import pytest
 
@@ -347,10 +349,11 @@ class TestAllocateEdgeCases:
     def test_allocations_are_contiguous_with_no_gaps(self) -> None:
         result = plan(*EXAMPLE_ROWS)
 
-        for previous, following in zip(result, result[1:]):
-            assert int(following.network.network_address) == int(
-                previous.network.broadcast_address
-            ) + 1
+        for previous, following in pairwise(result):
+            assert (
+                int(following.network.network_address)
+                == int(previous.network.broadcast_address) + 1
+            )
 
 
 class TestAllocateProperties:
@@ -365,7 +368,7 @@ class TestAllocateProperties:
     def test_blocks_never_overlap(self, seed: int) -> None:
         result = plan(*self.random_rows(seed), base="10.0.0.0")
 
-        for a, b in zip(result, result[1:]):
+        for a, b in pairwise(result):
             assert int(a.network.broadcast_address) < int(b.network.network_address)
 
     @pytest.mark.parametrize("seed", range(60))
@@ -499,37 +502,45 @@ TIED_FILE = "Ops 25\nLab 30\n"
 
 
 @pytest.fixture
-def example(tmp_path):  # type: ignore[no-untyped-def]
+def example(tmp_path: Path) -> str:
     path = tmp_path / "subsystems.txt"
     path.write_text(EXAMPLE_FILE, encoding="utf-8")
     return str(path)
 
 
 @pytest.fixture
-def tied(tmp_path):  # type: ignore[no-untyped-def]
+def tied(tmp_path: Path) -> str:
     path = tmp_path / "ties.txt"
     path.write_text(TIED_FILE, encoding="utf-8")
     return str(path)
 
 
 class TestCliSuccess:
-    def test_prints_the_golden_table_and_exits_zero(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_prints_the_golden_table_and_exits_zero(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         code = main([example])
 
         assert code == 0
         assert capsys.readouterr().out.rstrip("\n") == GOLDEN_TEXT
 
-    def test_defaults_to_base_192_168_0_0(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_defaults_to_base_192_168_0_0(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([example])
 
         assert "192.168.0.0/23" in capsys.readouterr().out
 
-    def test_honours_an_explicit_base(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_honours_an_explicit_base(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([example, "--base", "10.0.0.0"])
 
         assert "10.0.0.0/23" in capsys.readouterr().out
 
-    def test_reads_the_plan_from_stdin_when_given_a_dash(self, capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def test_reads_the_plan_from_stdin_when_given_a_dash(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("sys.stdin", io.StringIO(EXAMPLE_FILE))
 
         code = main(["-"])
@@ -537,17 +548,23 @@ class TestCliSuccess:
         assert code == 0
         assert "192.168.0.0/23" in capsys.readouterr().out
 
-    def test_csv_format_reaches_stdout(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_csv_format_reaches_stdout(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([example, "--format", "csv"])
 
         assert capsys.readouterr().out.startswith("subsystem,hosts,usable_range")
 
-    def test_json_format_reaches_stdout(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_json_format_reaches_stdout(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([example, "--format", "json"])
 
         assert json.loads(capsys.readouterr().out)["base"] == "192.168.0.0"
 
-    def test_order_input_restores_the_original_file_order(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_order_input_restores_the_original_file_order(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         path = tmp_path / "unsorted.txt"
         path.write_text("Guest 10\nSales 300\nOps 25\n", encoding="utf-8")
 
@@ -557,23 +574,22 @@ class TestCliSuccess:
         assert names == ["Guest", "Sales", "Ops"]
 
     def test_order_input_does_not_change_the_blocks_that_were_assigned(
-        self, tmp_path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         path = tmp_path / "unsorted.txt"
         path.write_text("Guest 10\nSales 300\nOps 25\n", encoding="utf-8")
 
         main([str(path), "--format", "csv", "--order", "input"])
 
-        rows = dict(
-            (row.split(",")[0], row.split(",")[3])
-            for row in capsys.readouterr().out.splitlines()[1:]
-        )
+        rows = {
+            row.split(",")[0]: row.split(",")[3] for row in capsys.readouterr().out.splitlines()[1:]
+        }
         assert rows["Sales"] == "192.168.0.0/23"
         assert rows["Guest"] == "192.168.2.32/28"
 
     def test_output_flag_writes_to_a_file_and_leaves_stdout_empty(
-        self, example, tmp_path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+        self, example: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         destination = tmp_path / "plan.txt"
 
         main([example, "--output", str(destination)])
@@ -583,29 +599,37 @@ class TestCliSuccess:
 
 
 class TestCliTieNotes:
-    def test_tie_note_goes_to_stderr_not_stdout(self, tied, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_tie_note_goes_to_stderr_not_stdout(
+        self, tied: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([tied])
 
         captured = capsys.readouterr()
         assert "tie" in captured.err
         assert "tie" not in captured.out
 
-    def test_tie_note_names_every_member_of_the_group(self, tied, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_tie_note_names_every_member_of_the_group(
+        self, tied: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([tied])
 
         error = capsys.readouterr().err
         assert "Ops" in error
         assert "Lab" in error
 
-    def test_quiet_suppresses_the_tie_note(self, tied, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_quiet_suppresses_the_tie_note(
+        self, tied: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([tied, "-q"])
 
         assert capsys.readouterr().err == ""
 
-    def test_a_tie_does_not_change_the_exit_code(self, tied) -> None:  # type: ignore[no-untyped-def]
+    def test_a_tie_does_not_change_the_exit_code(self, tied: str) -> None:
         assert main([tied]) == 0
 
-    def test_no_note_is_emitted_when_no_block_sizes_tie(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_no_note_is_emitted_when_no_block_sizes_tie(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         main([example])
 
         assert capsys.readouterr().err == ""
@@ -613,8 +637,8 @@ class TestCliTieNotes:
 
 class TestCliErrors:
     def test_duplicate_name_exits_two_and_prints_nothing_to_stdout(
-        self, tmp_path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         path = tmp_path / "dupes.txt"
         path.write_text("Sales 300\nOps 25\nSales 10\n", encoding="utf-8")
 
@@ -625,7 +649,9 @@ class TestCliErrors:
         assert captured.out == ""
         assert "duplicate" in captured.err
 
-    def test_bad_host_count_exits_two_citing_the_line(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_bad_host_count_exits_two_citing_the_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         path = tmp_path / "bad.txt"
         path.write_text("Sales 300\nOps 0\n", encoding="utf-8")
 
@@ -634,7 +660,9 @@ class TestCliErrors:
         assert code == 2
         assert "line 2" in capsys.readouterr().err
 
-    def test_base_with_a_prefix_exits_two_and_explains_why(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_base_with_a_prefix_exits_two_and_explains_why(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         code = main([example, "--base", "192.168.0.0/24"])
 
         captured = capsys.readouterr()
@@ -642,19 +670,23 @@ class TestCliErrors:
         assert "bare address" in captured.err
         assert captured.out == ""
 
-    def test_a_malformed_base_address_exits_two(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_a_malformed_base_address_exits_two(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         assert main([example, "--base", "not-an-address"]) == 2
         assert capsys.readouterr().err != ""
 
-    def test_a_missing_input_file_exits_two(self, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_a_missing_input_file_exits_two(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         code = main([str(tmp_path / "nope.txt")])
 
         assert code == 2
         assert capsys.readouterr().err != ""
 
     def test_misaligned_base_exits_one_and_prints_nothing_to_stdout(
-        self, example, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         code = main([example, "--base", "192.168.1.0"])
 
         captured = capsys.readouterr()
@@ -662,15 +694,29 @@ class TestCliErrors:
         assert captured.out == ""
         assert "aligned" in captured.err
 
-    def test_ipv4_overflow_exits_one(self, example, capsys) -> None:  # type: ignore[no-untyped-def]
+    def test_ipv4_overflow_exits_one(
+        self, example: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         code = main([example, "--base", "255.255.254.0"])
 
         assert code == 1
         assert "255.255.255.255" in capsys.readouterr().err
 
+    def test_an_unwritable_output_path_exits_two(
+        self, example: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        unreachable = tmp_path / "no-such-directory" / "plan.txt"
+
+        code = main([example, "--output", str(unreachable)])
+
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "cannot write" in captured.err
+        assert captured.out == ""
+
     def test_an_empty_input_file_succeeds_with_an_empty_table(
-        self, tmp_path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         path = tmp_path / "empty.txt"
         path.write_text("", encoding="utf-8")
 

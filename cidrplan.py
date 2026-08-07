@@ -13,8 +13,8 @@ import io
 import ipaddress
 import json
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 DEFAULT_BASE = "192.168.0.0"
 
@@ -86,9 +86,7 @@ def prefix_length(size: int) -> int:
     return ADDRESS_BITS - size.bit_length() + 1
 
 
-def allocate(
-    subsystems: Sequence[Subsystem], base: ipaddress.IPv4Address
-) -> list[Allocation]:
+def allocate(subsystems: Sequence[Subsystem], base: ipaddress.IPv4Address) -> list[Allocation]:
     """Assign each subsystem a block, laid out contiguously from base.
 
     Largest block first: this is what keeps every block on its own power-of-two
@@ -138,12 +136,8 @@ def tie_groups(allocations: Sequence[Allocation]) -> list[tuple[int, list[str]]]
     """Prefix lengths shared by more than one subsystem, longest block first."""
     by_prefix: dict[int, list[str]] = {}
     for allocation in allocations:
-        by_prefix.setdefault(allocation.network.prefixlen, []).append(
-            allocation.subsystem.name
-        )
-    return [
-        (prefix, names) for prefix, names in sorted(by_prefix.items()) if len(names) > 1
-    ]
+        by_prefix.setdefault(allocation.network.prefixlen, []).append(allocation.subsystem.name)
+    return [(prefix, names) for prefix, names in sorted(by_prefix.items()) if len(names) > 1]
 
 
 TEXT_HEADERS = (
@@ -166,23 +160,18 @@ def _text_row(allocation: Allocation) -> tuple[str, ...]:
     )
 
 
-def _summary_lines(
-    allocations: Sequence[Allocation], base: ipaddress.IPv4Address
-) -> list[str]:
+def _summary_lines(allocations: Sequence[Allocation], base: ipaddress.IPv4Address) -> list[str]:
     consumed = sum(a.network.num_addresses for a in allocations)
     end = int(base) + consumed
     return [
-        f"Allocated {consumed} addresses from {base} through "
-        f"{ipaddress.IPv4Address(end - 1)}."
+        f"Allocated {consumed} addresses from {base} through {ipaddress.IPv4Address(end - 1)}."
         if consumed
         else f"Allocated 0 addresses from {base}.",
         f"Next free address: {ipaddress.IPv4Address(end)}",
     ]
 
 
-def render_text(
-    allocations: Sequence[Allocation], base: ipaddress.IPv4Address
-) -> str:
+def render_text(allocations: Sequence[Allocation], base: ipaddress.IPv4Address) -> str:
     """Render the aligned report table plus its summary."""
     rows = [_text_row(a) for a in allocations]
     widths = [
@@ -192,9 +181,7 @@ def render_text(
 
     def line(cells: Sequence[str]) -> str:
         rendered = (
-            f"{cells[i]:>{widths[i]}}"
-            if i in RIGHT_ALIGNED_COLUMNS
-            else f"{cells[i]:<{widths[i]}}"
+            f"{cells[i]:>{widths[i]}}" if i in RIGHT_ALIGNED_COLUMNS else f"{cells[i]:<{widths[i]}}"
             for i in range(len(TEXT_HEADERS))
         )
         return "  ".join(rendered).rstrip()
@@ -207,9 +194,7 @@ def render_csv(allocations: Sequence[Allocation]) -> str:
     """Render the report as CSV, with the CIDR and its capacity split apart."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(
-        ["subsystem", "hosts", "usable_range", "cidr", "total_hosts", "leftover"]
-    )
+    writer.writerow(["subsystem", "hosts", "usable_range", "cidr", "total_hosts", "leftover"])
     for a in allocations:
         writer.writerow(
             [
@@ -224,9 +209,7 @@ def render_csv(allocations: Sequence[Allocation]) -> str:
     return buffer.getvalue().rstrip("\n")
 
 
-def render_json(
-    allocations: Sequence[Allocation], base: ipaddress.IPv4Address
-) -> str:
+def render_json(allocations: Sequence[Allocation], base: ipaddress.IPv4Address) -> str:
     """Render the report as JSON."""
     consumed = sum(a.network.num_addresses for a in allocations)
     payload = {
@@ -256,9 +239,7 @@ def _parse_count(raw: str, field: str, line_number: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        raise ParseError(
-            f"line {line_number}: {field} must be an integer, got {raw!r}"
-        ) from None
+        raise ParseError(f"line {line_number}: {field} must be an integer, got {raw!r}") from None
 
 
 def parse_input(lines: Iterable[str]) -> list[Subsystem]:
@@ -286,9 +267,7 @@ def parse_input(lines: Iterable[str]) -> list[Subsystem]:
         hosts = _parse_count(fields[-1], "hosts", line_number)
 
         if hosts < 1:
-            raise ParseError(
-                f"line {line_number}: hosts must be a positive integer, got {hosts}"
-            )
+            raise ParseError(f"line {line_number}: hosts must be a positive integer, got {hosts}")
 
         # Checked across the whole file before any allocation happens, so a
         # duplicate on the last line fails before a partial plan is printed.
@@ -318,9 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=("text", "csv", "json"), default="text")
     parser.add_argument("--order", choices=("size", "input"), default="size")
     parser.add_argument("--output", help="write the report here instead of stdout")
-    parser.add_argument(
-        "-q", "--quiet", action="store_true", help="suppress tie notes on stderr"
-    )
+    parser.add_argument("-q", "--quiet", action="store_true", help="suppress tie notes on stderr")
     return parser
 
 
