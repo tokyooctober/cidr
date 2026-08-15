@@ -78,10 +78,34 @@ naming them written to stderr.
 Errors and notes go to stderr; only the report goes to stdout, so `--format csv`
 and `--format json` stay parseable when piped.
 
+## Go version
+
+A second implementation of the same spec lives in [`go/`](go/), as a
+self-contained standard-library-only module. Use it when you want a single static
+binary instead of an interpreter.
+
+```bash
+cd go
+go build -o cidrplan .
+./cidrplan -format csv ../examples/subsystems.txt
+```
+
+Output matches the Python version in all three formats, with two documented
+differences:
+
+- Go writes `\n` line endings; Python writes `\r\n` on Windows.
+- Go's `flag` package requires flags **before** the filename
+  (`cidrplan -format csv plan.txt`). The other order fails with exit 2 and an
+  explanation rather than silently ignoring the flag.
+
+Python is the reference implementation — where the two disagree on anything else,
+the Go side is the bug.
+
 ## Development
 
 ```bash
-python -m pytest
+python -m pytest          # Python suite
+cd go && go test ./...    # Go suite
 ```
 
 Optional gates, if the tools are installed:

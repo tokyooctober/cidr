@@ -9,3 +9,7 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+
+# Go build artifacts
+*.exe
+go/cidrplan

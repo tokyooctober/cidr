@@ -275,14 +275,22 @@ would be more structure than the problem has.
 
 ```
 cidr/
-├── cidrplan.py           # the program: parse → size → sort → allocate → render
+├── cidrplan.py           # Python implementation: parse → size → sort → allocate → render
 ├── test_cidrplan.py      # pytest suite
+├── go/                   # Go implementation, self-contained module
+│   ├── cidrplan.go
+│   ├── cidrplan_test.go
+│   └── go.mod
 ├── examples/
 │   └── subsystems.txt    # the worked example from §2
 ├── SPEC.md
 ├── README.md
 └── pyproject.toml        # ruff + mypy + pytest config; no runtime deps
 ```
+
+There are **two implementations of the same specification**. Python at the
+repository root is the reference; Go under `go/` is a port. Both are complete,
+independently tested, and produce the same report — see §7.
 
 Internal organization of `cidrplan.py`, in order:
 
@@ -468,6 +476,76 @@ octet-crossing `/23`.
 
 ---
 
+## 7. The Go implementation
+
+A second implementation of this same specification lives in `go/`, as a
+self-contained module (`github.com/tokyooctober/cidr/go`). It exists so the plan
+can be produced from a single static binary with no interpreter present.
+
+### Rules
+
+- **Python is the reference implementation.** Where the two disagree on anything
+  other than the documented differences below, the Python behaviour is correct
+  and the Go side is the bug.
+- **Behaviour changes land in both, or in neither.** A change to sizing,
+  ordering, output columns, or exit codes that lands in only one implementation
+  is a defect, not a partial delivery.
+- **Standard library only**, as with Python. `go.mod` has no `require` block and
+  should stay that way.
+- **No shared build.** The Go module is independent; the repository root is not a
+  Go module and `go build ./go` from the root will fail. Build from inside `go/`.
+
+### Commands
+
+```
+cd go
+go build -o cidrplan .    # build the binary
+go test ./...             # tests
+go test -cover ./...      # coverage
+go vet ./...              # vet
+gofmt -l .                # format check (must print nothing)
+```
+
+### Parity
+
+Verified by diffing all three output formats against the Python implementation
+for the §2 worked example. The Go test suite carries the same golden table, the
+same `block_size` boundary table, and the same allocation invariants.
+
+### Documented differences
+
+These two are real and intentional. Anything else is a bug.
+
+1. **Line endings.** Python's `print` translates `\n` to `\r\n` on Windows; Go
+   writes `\n` on every platform. The reports are otherwise byte-identical. Diff
+   the two implementations with line endings normalised, not raw.
+2. **Flag position.** Go's `flag` package stops parsing at the first non-flag
+   argument, so flags must precede the input file:
+
+   ```
+   cidrplan -format csv plan.txt     # works
+   cidrplan plan.txt -format csv     # flag silently ignored
+   ```
+
+   Python's `argparse` accepts either order. Rather than reimplementing argparse
+   permutation, the Go version **detects** the second form and fails with exit 2
+   explaining the rule — a silently ignored flag would otherwise produce a
+   correct-looking report in the wrong format.
+
+### Implementation notes
+
+- Addresses are held as `uint64` internally and converted to `netip.Addr` only at
+  the boundary, so the overflow check against `255.255.255.255` cannot itself
+  wrap.
+- Column padding counts **runes**, not bytes, so a non-ASCII subsystem name lines
+  up the same way it does under Python.
+- `json.Encoder` is configured with `SetEscapeHTML(false)` and two-space indent to
+  match `json.dumps`, which escapes nothing and appends no trailing newline.
+- The negative-leftover check panics rather than returning an error. It guards an
+  invariant that only a code change can break, so it is not a user-facing error.
+
+---
+
 ## Open questions
 
 1. **Misaligned base — reject or auto-adjust?** Currently rejects with the nearest
@@ -475,3 +553,7 @@ octet-crossing `/23`.
    always succeed but silently move the plan off the address you asked for.
 2. **Does the summary line matter?** Shown under the example table; easy to drop
    if it's noise.
+3. **Should the two implementations share golden fixtures?** Each currently
+   carries its own copy of the golden table, so a change to output format means
+   editing both. A shared `testdata/` file would remove that duplication at the
+   cost of a file-read in tests that are otherwise pure.
