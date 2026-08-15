@@ -13,3 +13,6 @@ venv/
 # Go build artifacts
 *.exe
 go/cidrplan
+
+# Local scratch input
+delme.txt
